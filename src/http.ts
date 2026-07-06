@@ -4,8 +4,8 @@ import type { HttpMethod } from '@effect/platform/HttpMethod';
 import { Effect } from 'effect';
 import { Layer } from 'effect';
 
-import { runPromise, sleepEffect, tryPromiseUnknown } from './effectRuntime.js';
-import { AcaSandboxError } from './errors.js';
+import { runPromise } from './effectRuntime.js';
+import { AcaSandboxError, CredentialError, NetworkError } from './errors.js';
 import type { TokenCredential } from './types.js';
 import { normalizeEndpoint } from './util.js';
 
@@ -41,6 +41,8 @@ export type RawResponse<T = unknown> = {
   body: T;
 };
 
+export type RestClientError = AcaSandboxError | CredentialError | NetworkError;
+
 const DEFAULT_RETRY_STATUS_CODES = [403, 408, 429, 500, 502, 503, 504];
 
 export class RestClient {
@@ -51,6 +53,7 @@ export class RestClient {
   private readonly scope: string;
   private readonly fetchImpl: typeof fetch;
   private readonly retryOptions: Required<RetryOptions>;
+  private readonly httpLayer: Layer.Layer<HttpClient.HttpClient>;
 
   constructor(options: RestClientOptions) {
     if (!options.credential) {
@@ -77,6 +80,9 @@ export class RestClient {
       maxRetryDelayInMs: options.retryOptions?.maxRetryDelayInMs ?? 10_000,
       retryStatusCodes: options.retryOptions?.retryStatusCodes ?? DEFAULT_RETRY_STATUS_CODES,
     };
+    this.httpLayer = FetchHttpClient.layer.pipe(
+      Layer.provide(Layer.succeed(FetchHttpClient.Fetch, this.fetchImpl)),
+    );
   }
 
   request<T = unknown>(
@@ -84,7 +90,9 @@ export class RestClient {
     pathOrUrl: string,
     options: RequestOptions = {},
   ): Promise<T> {
-    return runPromise(this.requestEffect<T>(method, pathOrUrl, options));
+    return runPromise(this.requestEffect<T>(method, pathOrUrl, options), {
+      signal: options.abortSignal,
+    });
   }
 
   requestRaw<T = unknown>(
@@ -92,7 +100,9 @@ export class RestClient {
     pathOrUrl: string,
     options: RequestOptions = {},
   ): Promise<RawResponse<T>> {
-    return runPromise(this.requestRawEffect<T>(method, pathOrUrl, options));
+    return runPromise(this.requestRawEffect<T>(method, pathOrUrl, options), {
+      signal: options.abortSignal,
+    });
   }
 
   /** @internal */
@@ -100,7 +110,7 @@ export class RestClient {
     method: string,
     pathOrUrl: string,
     options: RequestOptions = {},
-  ): Effect.Effect<T, unknown> {
+  ): Effect.Effect<T, RestClientError> {
     return Effect.map(
       this.requestRawEffect<T>(method, pathOrUrl, options),
       (response) => response.body,
@@ -112,15 +122,20 @@ export class RestClient {
     method: string,
     pathOrUrl: string,
     options: RequestOptions = {},
-  ): Effect.Effect<RawResponse<T>, unknown> {
+  ): Effect.Effect<RawResponse<T>, RestClientError> {
     return Effect.gen(this, function* () {
-      const token = yield* tryPromiseUnknown(() =>
-        this.credential.getToken(this.scope, { abortSignal: options.abortSignal }),
-      );
+      const token = yield* Effect.tryPromise({
+        try: (signal) =>
+          this.credential.getToken(this.scope, { abortSignal: options.abortSignal ?? signal }),
+        catch: (cause) =>
+          new CredentialError({ message: 'Failed to acquire Azure access token.', cause }),
+      });
 
       if (!token) {
         return yield* Effect.fail(
-          new Error(`Credential did not return an access token for scope ${this.scope}.`),
+          new CredentialError({
+            message: `Credential did not return an access token for scope ${this.scope}.`,
+          }),
         );
       }
 
@@ -164,18 +179,26 @@ export class RestClient {
 
       for (let attempt = 0; attempt <= this.retryOptions.maxRetries; attempt += 1) {
         const client = yield* HttpClient.HttpClient;
-        const response = yield* client.execute(request);
+        const response = yield* client
+          .execute(request)
+          .pipe(
+            Effect.mapError(
+              (cause) => new NetworkError({ message: 'HTTP request failed.', cause }),
+            ),
+          );
         lastResponse = response;
 
         if (!this.shouldRetry(response, attempt)) {
           break;
         }
 
-        yield* sleepEffect(this.retryDelay(response, attempt), options.abortSignal);
+        yield* Effect.sleep(this.retryDelay(response, attempt));
       }
 
       if (!lastResponse) {
-        return yield* Effect.fail(new Error('No HTTP response was received.'));
+        return yield* Effect.fail(
+          new NetworkError({ message: 'No HTTP response was received.', cause: undefined }),
+        );
       }
 
       const allowedStatusCodes = options.allowedStatusCodes ?? [];
@@ -183,7 +206,9 @@ export class RestClient {
       if (!isOkStatus(lastResponse.status) && !allowedStatusCodes.includes(lastResponse.status)) {
         const responseBody = yield* parseResponseBody(lastResponse, 'json');
         const message = errorMessage(lastResponse.status, responseBody);
-        return yield* Effect.fail(new AcaSandboxError(message, lastResponse.status, responseBody));
+        return yield* Effect.fail(
+          new AcaSandboxError({ message, statusCode: lastResponse.status, responseBody }),
+        );
       }
 
       const responseType = options.responseType ?? 'json';
@@ -193,7 +218,10 @@ export class RestClient {
         headers: platformHeadersToWeb(lastResponse.headers),
         body: parsed as T,
       };
-    }).pipe(Effect.provide(this.httpLayer(options.abortSignal)));
+    }).pipe(
+      Effect.mapError((error) => mapRestClientError(error)),
+      Effect.provide(this.httpLayer),
+    );
   }
 
   validateContinuationUrl(nextLink: string): void {
@@ -252,20 +280,6 @@ export class RestClient {
 
     const delay = this.retryOptions.retryDelayInMs * 2 ** attempt;
     return Math.min(delay, this.retryOptions.maxRetryDelayInMs);
-  }
-
-  private httpLayer(abortSignal?: AbortSignal) {
-    let layer = FetchHttpClient.layer.pipe(
-      Layer.provide(Layer.succeed(FetchHttpClient.Fetch, this.fetchImpl)),
-    );
-
-    if (abortSignal) {
-      layer = layer.pipe(
-        Layer.provide(Layer.succeed(FetchHttpClient.RequestInit, { signal: abortSignal })),
-      );
-    }
-
-    return layer;
   }
 }
 
@@ -354,5 +368,20 @@ function bodyToUint8Array(body: ArrayBuffer | Blob): Effect.Effect<Uint8Array, u
     return Effect.succeed(new Uint8Array(body));
   }
 
-  return tryPromiseUnknown(async () => new Uint8Array(await body.arrayBuffer()));
+  return Effect.tryPromise({
+    try: async () => new Uint8Array(await body.arrayBuffer()),
+    catch: (cause) => cause,
+  });
+}
+
+function mapRestClientError(error: unknown): RestClientError {
+  if (
+    error instanceof AcaSandboxError ||
+    error instanceof CredentialError ||
+    error instanceof NetworkError
+  ) {
+    return error;
+  }
+
+  return new NetworkError({ message: 'HTTP response handling failed.', cause: error });
 }

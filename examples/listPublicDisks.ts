@@ -1,6 +1,6 @@
 import { DefaultAzureCredential } from '@azure/identity';
 
-import { SandboxGroupClient, endpointForRegion } from '../src/index.js';
+import { SandboxGroupClient } from '../src/index.js';
 
 // Usage:
 // az login
@@ -13,33 +13,13 @@ declare const process: {
 
 loadExamplesEnv();
 
-const subscriptionId = requiredEnv('AZURE_SUBSCRIPTION_ID');
-const resourceGroup = requiredEnv('AZURE_RESOURCE_GROUP');
-const sandboxGroup = requiredEnv('AZURE_SANDBOX_GROUP');
-const region = process.env.AZURE_REGION ?? 'swedencentral';
-
 const credential = new DefaultAzureCredential();
+const client = SandboxGroupClient.fromEnv({ credential, region: 'swedencentral' });
 
-const client = new SandboxGroupClient(endpointForRegion(region), credential, {
-  subscriptionId,
-  resourceGroup,
-  sandboxGroup,
-});
-
-console.log(`Listing public disk images in ${region} for sandbox group ${sandboxGroup}...`);
+console.log(`Listing public disk images for sandbox group ${client.sandboxGroup}...`);
 
 for await (const image of client.listPublicDiskImages()) {
   console.log(JSON.stringify(image, null, 2));
-}
-
-function requiredEnv(name: string): string {
-  const value = process.env[name];
-
-  if (!value) {
-    throw new Error(`Missing required environment variable: ${name}`);
-  }
-
-  return value;
 }
 
 function loadExamplesEnv(): void {

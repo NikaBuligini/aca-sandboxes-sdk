@@ -1,7 +1,12 @@
-import { DATA_PLANE_BASE, DATA_PLANE_SCOPE, DEFAULT_API_VERSION } from './constants.js';
+import {
+  DATA_PLANE_BASE,
+  DATA_PLANE_SCOPE,
+  DEFAULT_API_VERSION,
+  endpointForRegion,
+} from './constants.js';
 import { isNotFoundError } from './errors.js';
 import { RestClient } from './http.js';
-import { listPaged } from './pagination.js';
+import { PagedIterable, listPaged } from './pagination.js';
 import { OperationPoller, statePoller } from './poller.js';
 import { SandboxClient } from './sandboxClient.js';
 import type {
@@ -13,10 +18,10 @@ import type {
   PublicDiskImage,
   Sandbox,
   SandboxGroupClientOptions,
+  SandboxGroupClientFromEnvOptions,
   SecretMetadata,
   SecretValuePeek,
   Snapshot,
-  TokenCredential,
   Volume,
 } from './types.js';
 import { labelsToSelector, pathSegment, validatePathSegment } from './util.js';
@@ -28,16 +33,26 @@ export class SandboxGroupClient {
 
   private readonly rest: RestClient;
 
-  constructor(endpoint: string, credential: TokenCredential, options: SandboxGroupClientOptions) {
+  constructor(options: SandboxGroupClientOptions) {
     this.subscriptionId = options.subscriptionId;
     this.resourceGroup = validatePathSegment(options.resourceGroup, 'resourceGroup');
     this.sandboxGroup = validatePathSegment(options.sandboxGroup, 'sandboxGroup');
     this.rest = new RestClient({
-      endpoint: endpoint || DATA_PLANE_BASE,
-      credential,
+      endpoint: resolveDataPlaneEndpoint(options),
+      credential: options.credential,
       scope: options.audience ?? DATA_PLANE_SCOPE,
       apiVersion: options.apiVersion ?? DEFAULT_API_VERSION,
       fetch: options.fetch,
+    });
+  }
+
+  static fromEnv(options: SandboxGroupClientFromEnvOptions): SandboxGroupClient {
+    return new SandboxGroupClient({
+      ...options,
+      subscriptionId: options.subscriptionId ?? requiredEnv('AZURE_SUBSCRIPTION_ID'),
+      resourceGroup: options.resourceGroup ?? requiredEnv('AZURE_RESOURCE_GROUP'),
+      sandboxGroup: options.sandboxGroup ?? requiredEnv('AZURE_SANDBOX_GROUP'),
+      region: options.region ?? (options.endpoint ? undefined : env('AZURE_REGION')),
     });
   }
 
@@ -45,7 +60,7 @@ export class SandboxGroupClient {
     return `/subscriptions/${encodeURIComponent(this.subscriptionId)}/resourceGroups/${pathSegment(this.resourceGroup, 'resourceGroup')}/sandboxGroups/${pathSegment(this.sandboxGroup, 'sandboxGroup')}`;
   }
 
-  getSandboxClient(sandboxId: string): SandboxClient {
+  sandbox(sandboxId: string): SandboxClient {
     validatePathSegment(sandboxId, 'sandboxId');
     return new SandboxClient(this.rest, {
       subscriptionId: this.subscriptionId,
@@ -55,12 +70,14 @@ export class SandboxGroupClient {
     });
   }
 
-  listSandboxes(options: ListSandboxesOptions = {}): AsyncIterable<Sandbox> {
-    return listPaged<Sandbox>({
-      client: this.rest,
-      path: `${this.groupPath}/sandboxes`,
-      params: { labels: labelsToSelector(options.labels) },
-    });
+  listSandboxes(options: ListSandboxesOptions = {}): PagedIterable<Sandbox> {
+    return new PagedIterable(() =>
+      listPaged<Sandbox>({
+        client: this.rest,
+        path: `${this.groupPath}/sandboxes`,
+        params: { labels: labelsToSelector(options.labels) },
+      }),
+    );
   }
 
   async getSandbox(sandboxId: string): Promise<Sandbox> {
@@ -71,7 +88,7 @@ export class SandboxGroupClient {
     );
   }
 
-  beginCreateSandbox(options: CreateSandboxOptions = {}): OperationPoller<SandboxClient> {
+  createSandbox(options: CreateSandboxOptions = {}): OperationPoller<SandboxClient> {
     let created: Sandbox | undefined;
     let client: SandboxClient | undefined;
 
@@ -79,7 +96,7 @@ export class SandboxGroupClient {
       getResource: async () => {
         if (!created) {
           created = await this.createSandboxResource(options);
-          client = this.getSandboxClient(created.id);
+          client = this.sandbox(created.id);
         }
 
         try {
@@ -95,31 +112,15 @@ export class SandboxGroupClient {
       targetStates: ['Running'],
       failedStates: ['Failed', 'Deleting'],
       transform: () => client as SandboxClient,
-    });
+    }).start();
   }
 
-  async createSandbox(options: CreateSandboxOptions = {}): Promise<SandboxClient> {
-    return this.beginCreateSandbox(options).pollUntilDone();
-  }
-
-  async deleteSandbox(sandboxId: string): Promise<void> {
-    validatePathSegment(sandboxId, 'sandboxId');
-    await this.rest.request(
-      'DELETE',
-      `${this.groupPath}/sandboxes/${pathSegment(sandboxId, 'sandboxId')}`,
-      {
-        responseType: 'void',
-        allowedStatusCodes: [202],
-      },
-    );
-  }
-
-  beginDeleteSandbox(sandboxId: string): OperationPoller<void> {
+  deleteSandbox(sandboxId: string): OperationPoller<void> {
     let started = false;
     return new OperationPoller(async () => {
       if (!started) {
         started = true;
-        await this.deleteSandbox(sandboxId);
+        await this.deleteSandboxResource(sandboxId);
       }
 
       try {
@@ -131,18 +132,22 @@ export class SandboxGroupClient {
         }
         throw error;
       }
-    });
+    }).start();
   }
 
-  listDiskImages(): AsyncIterable<DiskImage> {
-    return listPaged<DiskImage>({ client: this.rest, path: `${this.groupPath}/diskimages` });
+  listDiskImages(): PagedIterable<DiskImage> {
+    return new PagedIterable(() =>
+      listPaged<DiskImage>({ client: this.rest, path: `${this.groupPath}/diskimages` }),
+    );
   }
 
-  listPublicDiskImages(): AsyncIterable<PublicDiskImage> {
-    return listPaged<PublicDiskImage>({
-      client: this.rest,
-      path: `${this.groupPath}/diskimages/public`,
-    });
+  listPublicDiskImages(): PagedIterable<PublicDiskImage> {
+    return new PagedIterable(() =>
+      listPaged<PublicDiskImage>({
+        client: this.rest,
+        path: `${this.groupPath}/diskimages/public`,
+      }),
+    );
   }
 
   async getDiskImage(imageId: string): Promise<DiskImage> {
@@ -161,42 +166,14 @@ export class SandboxGroupClient {
     );
   }
 
-  async createDiskImage(
-    baseImage: string,
-    options: CreateDiskImageOptions = {},
-  ): Promise<DiskImage> {
-    const body: Record<string, unknown> = { image: { base: baseImage } };
-
-    if (options.entrypoint) {
-      (body.image as Record<string, unknown>).entrypoint = options.entrypoint;
-    }
-
-    if (options.cmd) {
-      (body.image as Record<string, unknown>).cmd = options.cmd;
-    }
-
-    if (options.name) {
-      body.labels = { name: options.name };
-    }
-
-    if (options.registryCredentials) {
-      body.registryCredentials = options.registryCredentials;
-    }
-
-    if (options.managedIdentityResourceId) {
-      body.managedIdentityResourceId = options.managedIdentityResourceId;
-    }
-    return this.rest.request<DiskImage>('PUT', `${this.groupPath}/diskimages`, { body });
-  }
-
-  beginCreateDiskImage(
+  createDiskImage(
     baseImage: string,
     options: CreateDiskImageOptions = {},
   ): OperationPoller<DiskImage> {
     let image: DiskImage | undefined;
     return statePoller({
       getResource: async () => {
-        image ??= await this.createDiskImage(baseImage, options);
+        image ??= await this.createDiskImageResource(baseImage, options);
 
         try {
           return await this.getDiskImage(image.id);
@@ -211,7 +188,7 @@ export class SandboxGroupClient {
       targetStates: ['Ready', 'Succeeded'],
       failedStates: ['Failed'],
       transform: (resource) => resource,
-    });
+    }).start();
   }
 
   async deleteDiskImage(imageId: string): Promise<void> {
@@ -226,8 +203,10 @@ export class SandboxGroupClient {
     );
   }
 
-  listSnapshots(): AsyncIterable<Snapshot> {
-    return listPaged<Snapshot>({ client: this.rest, path: `${this.groupPath}/snapshots` });
+  listSnapshots(): PagedIterable<Snapshot> {
+    return new PagedIterable(() =>
+      listPaged<Snapshot>({ client: this.rest, path: `${this.groupPath}/snapshots` }),
+    );
   }
 
   async getSnapshot(snapshotId: string): Promise<Snapshot> {
@@ -250,8 +229,10 @@ export class SandboxGroupClient {
     );
   }
 
-  listVolumes(): AsyncIterable<Volume> {
-    return listPaged<Volume>({ client: this.rest, path: `${this.groupPath}/volumes` });
+  listVolumes(): PagedIterable<Volume> {
+    return new PagedIterable(() =>
+      listPaged<Volume>({ client: this.rest, path: `${this.groupPath}/volumes` }),
+    );
   }
 
   async getVolume(volumeName: string): Promise<Volume> {
@@ -300,12 +281,14 @@ export class SandboxGroupClient {
     );
   }
 
-  listSecrets(): AsyncIterable<SecretMetadata> {
-    return listPaged<SecretMetadata>({
-      client: this.rest,
-      path: `${this.groupPath}/secrets`,
-      itemKey: 'secrets',
-    });
+  listSecrets(): PagedIterable<SecretMetadata> {
+    return new PagedIterable(() =>
+      listPaged<SecretMetadata>({
+        client: this.rest,
+        path: `${this.groupPath}/secrets`,
+        itemKey: 'secrets',
+      }),
+    );
   }
 
   async upsertSecret(secretId: string, values: Record<string, string>): Promise<SecretValuePeek> {
@@ -347,6 +330,68 @@ export class SandboxGroupClient {
     const body = createSandboxPayload(options);
     return this.rest.request<Sandbox>('PUT', `${this.groupPath}/sandboxes`, { body });
   }
+
+  private async deleteSandboxResource(sandboxId: string): Promise<void> {
+    validatePathSegment(sandboxId, 'sandboxId');
+    await this.rest.request(
+      'DELETE',
+      `${this.groupPath}/sandboxes/${pathSegment(sandboxId, 'sandboxId')}`,
+      {
+        responseType: 'void',
+        allowedStatusCodes: [202],
+      },
+    );
+  }
+
+  private async createDiskImageResource(
+    baseImage: string,
+    options: CreateDiskImageOptions,
+  ): Promise<DiskImage> {
+    const body: Record<string, unknown> = { image: { base: baseImage } };
+
+    if (options.entrypoint) {
+      (body.image as Record<string, unknown>).entrypoint = options.entrypoint;
+    }
+
+    if (options.cmd) {
+      (body.image as Record<string, unknown>).cmd = options.cmd;
+    }
+
+    if (options.name) {
+      body.labels = { name: options.name };
+    }
+
+    if (options.registryCredentials) {
+      body.registryCredentials = options.registryCredentials;
+    }
+
+    if (options.managedIdentityResourceId) {
+      body.managedIdentityResourceId = options.managedIdentityResourceId;
+    }
+    return this.rest.request<DiskImage>('PUT', `${this.groupPath}/diskimages`, { body });
+  }
+}
+
+function resolveDataPlaneEndpoint(options: SandboxGroupClientOptions): string {
+  if (options.endpoint && options.region) {
+    throw new Error('Use either endpoint or region, not both.');
+  }
+  return options.endpoint ?? (options.region ? endpointForRegion(options.region) : DATA_PLANE_BASE);
+}
+
+function requiredEnv(name: string): string {
+  const value = env(name);
+
+  if (!value) {
+    throw new Error(`Missing required environment variable: ${name}`);
+  }
+  return value;
+}
+
+function env(name: string): string | undefined {
+  return (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.[
+    name
+  ];
 }
 
 function createSandboxPayload(options: CreateSandboxOptions): Record<string, unknown> {

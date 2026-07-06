@@ -21,13 +21,19 @@ export type AutoSuspendMode = 'Memory' | 'Disk';
 export type EgressAction = 'Allow' | 'Deny';
 export type VolumeType = 'AzureBlob' | 'DataDisk' | 'AzureBlobByo';
 
-export type SandboxGroupClientOptions = {
-  subscriptionId: string;
-  resourceGroup: string;
-  sandboxGroup: string;
+export type DataPlaneClientOptions = {
+  credential: TokenCredential;
+  region?: string;
+  endpoint?: string;
   audience?: string;
   apiVersion?: string;
   fetch?: typeof fetch;
+};
+
+export type SandboxGroupClientOptions = DataPlaneClientOptions & {
+  subscriptionId: string;
+  resourceGroup: string;
+  sandboxGroup: string;
 };
 
 export type SandboxClientOptions = SandboxGroupClientOptions & {
@@ -35,11 +41,23 @@ export type SandboxClientOptions = SandboxGroupClientOptions & {
 };
 
 export type SandboxGroupManagementClientOptions = {
+  credential: TokenCredential;
   subscriptionId: string;
   resourceGroup: string;
   apiVersion?: string;
   fetch?: typeof fetch;
 };
+
+export type SandboxGroupClientFromEnvOptions = Partial<
+  Pick<SandboxGroupClientOptions, 'subscriptionId' | 'resourceGroup' | 'sandboxGroup' | 'region'>
+> &
+  Pick<SandboxGroupClientOptions, 'credential'> &
+  Pick<SandboxGroupClientOptions, 'endpoint' | 'audience' | 'apiVersion' | 'fetch'>;
+
+export type SandboxGroupManagementClientFromEnvOptions = Partial<
+  Pick<SandboxGroupManagementClientOptions, 'subscriptionId' | 'resourceGroup'>
+> &
+  Pick<SandboxGroupManagementClientOptions, 'credential' | 'apiVersion' | 'fetch'>;
 
 export type SandboxResources = {
   cpu?: string;
@@ -108,12 +126,13 @@ export type ListSandboxesOptions = {
 
 export type ExecOptions = {
   workingDirectory?: string;
+  check?: boolean;
 };
 
 export type ExecResult = {
-  stdout?: string;
-  stderr?: string;
-  exitCode?: number;
+  stdout: string;
+  stderr: string;
+  exitCode: number;
   [key: string]: unknown;
 };
 

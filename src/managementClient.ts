@@ -1,12 +1,12 @@
 import { ARM_BASE, ARM_SCOPE, DEFAULT_API_VERSION } from './constants.js';
 import { RestClient } from './http.js';
-import { listPaged } from './pagination.js';
+import { PagedIterable, listPaged } from './pagination.js';
 import { OperationPoller } from './poller.js';
 import type {
   CreateSandboxGroupOptions,
   SandboxGroup,
+  SandboxGroupManagementClientFromEnvOptions,
   SandboxGroupManagementClientOptions,
-  TokenCredential,
 } from './types.js';
 import { pathSegment, validatePathSegment } from './util.js';
 
@@ -16,15 +16,25 @@ export class SandboxGroupManagementClient {
 
   private readonly rest: RestClient;
 
-  constructor(credential: TokenCredential, options: SandboxGroupManagementClientOptions) {
+  constructor(options: SandboxGroupManagementClientOptions) {
     this.subscriptionId = options.subscriptionId;
     this.resourceGroup = validatePathSegment(options.resourceGroup, 'resourceGroup');
     this.rest = new RestClient({
       endpoint: ARM_BASE,
-      credential,
+      credential: options.credential,
       scope: ARM_SCOPE,
       apiVersion: options.apiVersion ?? DEFAULT_API_VERSION,
       fetch: options.fetch,
+    });
+  }
+
+  static fromEnv(
+    options: SandboxGroupManagementClientFromEnvOptions,
+  ): SandboxGroupManagementClient {
+    return new SandboxGroupManagementClient({
+      ...options,
+      subscriptionId: options.subscriptionId ?? requiredEnv('AZURE_SUBSCRIPTION_ID'),
+      resourceGroup: options.resourceGroup ?? requiredEnv('AZURE_RESOURCE_GROUP'),
     });
   }
 
@@ -32,8 +42,10 @@ export class SandboxGroupManagementClient {
     return `/subscriptions/${encodeURIComponent(this.subscriptionId)}/resourceGroups/${pathSegment(this.resourceGroup, 'resourceGroup')}/providers/Microsoft.App/sandboxGroups`;
   }
 
-  listGroups(): AsyncIterable<SandboxGroup> {
-    return listPaged<SandboxGroup>({ client: this.rest, path: this.groupBasePath });
+  listGroups(): PagedIterable<SandboxGroup> {
+    return new PagedIterable(() =>
+      listPaged<SandboxGroup>({ client: this.rest, path: this.groupBasePath }),
+    );
   }
 
   async getGroup(name: string): Promise<SandboxGroup> {
@@ -44,23 +56,7 @@ export class SandboxGroupManagementClient {
     );
   }
 
-  async createGroup(
-    name: string,
-    location: string,
-    options: CreateSandboxGroupOptions = {},
-  ): Promise<SandboxGroup> {
-    validatePathSegment(name, 'sandboxGroup');
-    return this.rest.request<SandboxGroup>(
-      'PUT',
-      `${this.groupBasePath}/${pathSegment(name, 'sandboxGroup')}`,
-      {
-        body: sandboxGroupBody(location, options),
-        allowedStatusCodes: [202],
-      },
-    );
-  }
-
-  beginCreateGroup(
+  createGroup(
     name: string,
     location: string,
     options: CreateSandboxGroupOptions = {},
@@ -110,22 +106,10 @@ export class SandboxGroupManagementClient {
         throw new Error(`Sandbox group operation failed: ${JSON.stringify(statusResponse)}`);
       }
       return { done: false, status };
-    });
+    }).start();
   }
 
-  async deleteGroup(name: string): Promise<void> {
-    validatePathSegment(name, 'sandboxGroup');
-    await this.rest.request(
-      'DELETE',
-      `${this.groupBasePath}/${pathSegment(name, 'sandboxGroup')}`,
-      {
-        responseType: 'void',
-        allowedStatusCodes: [202],
-      },
-    );
-  }
-
-  beginDeleteGroup(name: string): OperationPoller<void> {
+  deleteGroup(name: string): OperationPoller<void> {
     let operationUrl: string | undefined;
     let started = false;
 
@@ -167,22 +151,10 @@ export class SandboxGroupManagementClient {
         throw new Error(`Sandbox group delete failed: ${JSON.stringify(statusResponse)}`);
       }
       return { done: false, status };
-    });
+    }).start();
   }
 
-  async patchGroupIdentity(name: string, identity: Record<string, unknown>): Promise<SandboxGroup> {
-    validatePathSegment(name, 'sandboxGroup');
-    return this.rest.request<SandboxGroup>(
-      'PATCH',
-      `${this.groupBasePath}/${pathSegment(name, 'sandboxGroup')}`,
-      {
-        body: { identity },
-        allowedStatusCodes: [202],
-      },
-    );
-  }
-
-  beginPatchGroupIdentity(
+  patchGroupIdentity(
     name: string,
     identity: Record<string, unknown>,
   ): OperationPoller<SandboxGroup> {
@@ -225,7 +197,7 @@ export class SandboxGroupManagementClient {
         throw new Error(`Sandbox group identity patch failed: ${JSON.stringify(statusResponse)}`);
       }
       return { done: false, status };
-    });
+    }).start();
   }
 
   async createOrUpdateVnetConnection(
@@ -263,6 +235,16 @@ export class SandboxGroupManagementClient {
       { responseType: 'void', allowedStatusCodes: [202] },
     );
   }
+}
+
+function requiredEnv(name: string): string {
+  const value = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process
+    ?.env?.[name];
+
+  if (!value) {
+    throw new Error(`Missing required environment variable: ${name}`);
+  }
+  return value;
 }
 
 function sandboxGroupBody(

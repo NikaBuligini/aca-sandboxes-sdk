@@ -1,6 +1,7 @@
 import { Effect } from 'effect';
 
-import { runPromise, sleepEffect, tryPromiseUnknown } from './effectRuntime.js';
+import { runPromise } from './effectRuntime.js';
+import { OperationFailedError, PollTimeoutError } from './errors.js';
 
 export type PollResult<TResult> = {
   done: boolean;
@@ -14,9 +15,11 @@ export type PollUntilDoneOptions = {
   abortSignal?: AbortSignal;
 };
 
-export class OperationPoller<TResult> {
-  private readonly pollOperation: () => unknown;
+export class OperationPoller<TResult> implements PromiseLike<TResult> {
+  private readonly pollOperation: () => Effect.Effect<PollResult<TResult>, unknown>;
   private latest?: PollResult<TResult>;
+  private inFlightPoll?: Promise<PollResult<TResult>>;
+  private completion?: Promise<TResult>;
 
   constructor(pollOperation: () => Promise<PollResult<TResult>>);
   /** @internal */
@@ -26,7 +29,15 @@ export class OperationPoller<TResult> {
   constructor(
     pollOperation: () => Promise<PollResult<TResult>> | Effect.Effect<PollResult<TResult>, unknown>,
   ) {
-    this.pollOperation = pollOperation;
+    this.pollOperation = () => {
+      const operation = pollOperation();
+      return Effect.isEffect(operation)
+        ? operation
+        : Effect.tryPromise({
+            try: () => operation,
+            catch: (error) => error,
+          });
+    };
   }
 
   get isDone(): boolean {
@@ -41,51 +52,84 @@ export class OperationPoller<TResult> {
     return this.latest?.result;
   }
 
+  start(): this {
+    void this.poll().catch(() => undefined);
+    return this;
+  }
+
   poll(): Promise<PollResult<TResult>> {
-    return runPromise(this.pollEffect());
+    this.inFlightPoll ??= runPromise(this.executePollEffect()).finally(() => {
+      this.inFlightPoll = undefined;
+    });
+    return this.inFlightPoll;
   }
 
   /** @internal */
   pollEffect(): Effect.Effect<PollResult<TResult>, unknown> {
+    return Effect.tryPromise({
+      try: () => this.poll(),
+      catch: (error) => error,
+    });
+  }
+
+  private executePollEffect(): Effect.Effect<PollResult<TResult>, unknown> {
     return Effect.gen(this, function* () {
-      const operation = this.pollOperation();
-      const result = Effect.isEffect(operation)
-        ? yield* operation as Effect.Effect<PollResult<TResult>, unknown>
-        : yield* tryPromiseUnknown(() => operation as Promise<PollResult<TResult>>);
+      const result = yield* this.pollOperation();
       this.latest = result;
       return result;
     });
   }
 
   pollUntilDone(options: PollUntilDoneOptions = {}): Promise<TResult> {
-    return runPromise(this.pollUntilDoneEffect(options));
+    this.completion ??= runPromise(this.pollUntilDoneEffect(options), {
+      signal: options.abortSignal,
+    });
+    return this.completion;
+  }
+
+  // oxlint-disable-next-line unicorn/no-thenable
+  then<TResult1 = TResult, TResult2 = never>(
+    onfulfilled?: ((value: TResult) => TResult1 | PromiseLike<TResult1>) | null,
+    onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+  ): PromiseLike<TResult1 | TResult2> {
+    return this.pollUntilDone().then(onfulfilled, onrejected);
+  }
+
+  catch<TCatch = never>(
+    onrejected?: ((reason: unknown) => TCatch | PromiseLike<TCatch>) | null,
+  ): Promise<TResult | TCatch> {
+    return this.pollUntilDone().catch(onrejected);
+  }
+
+  finally(onfinally?: (() => void) | null): Promise<TResult> {
+    return this.pollUntilDone().finally(onfinally);
   }
 
   /** @internal */
   pollUntilDoneEffect(options: PollUntilDoneOptions = {}): Effect.Effect<TResult, unknown> {
     const intervalInMs = options.intervalInMs ?? 3_000;
     const timeoutInMs = options.timeoutInMs ?? 300_000;
-    const deadline = Date.now() + timeoutInMs;
+    let lastStatus: string | undefined;
 
-    return Effect.gen(this, function* () {
+    const loop = Effect.gen(this, function* () {
       while (true) {
         const result = yield* this.pollEffect();
+        lastStatus = result.status;
 
         if (result.done) {
           return result.result as TResult;
         }
 
-        if (Date.now() >= deadline) {
-          return yield* Effect.fail(
-            new Error(
-              `Operation did not complete within ${timeoutInMs}ms. Last status: ${result.status ?? 'unknown'}.`,
-            ),
-          );
-        }
-
-        yield* sleepEffect(intervalInMs, options.abortSignal);
+        yield* Effect.sleep(intervalInMs);
       }
     });
+
+    return loop.pipe(
+      Effect.timeoutFail({
+        duration: timeoutInMs,
+        onTimeout: () => new PollTimeoutError({ timeoutInMs, lastStatus }),
+      }),
+    );
   }
 }
 
@@ -104,7 +148,10 @@ export function statePoller<TResource, TResult>(options: {
       const operation = options.getResource();
       const resource = Effect.isEffect(operation)
         ? yield* operation
-        : yield* tryPromiseUnknown(() => operation);
+        : yield* Effect.tryPromise({
+            try: () => operation,
+            catch: (error) => error,
+          });
       const status = options.getState(resource);
       const normalized = status?.toLowerCase();
 
@@ -113,7 +160,13 @@ export function statePoller<TResource, TResult>(options: {
       }
 
       if (normalized && failedStates.has(normalized)) {
-        return yield* Effect.fail(new Error(`Operation failed with state '${status}'.`));
+        return yield* Effect.fail(
+          new OperationFailedError({
+            message: `Operation failed with state '${status}'.`,
+            status,
+            details: resource,
+          }),
+        );
       }
 
       return { done: false, status };

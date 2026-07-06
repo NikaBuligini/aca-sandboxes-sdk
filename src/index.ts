@@ -8,8 +8,9 @@ export {
   endpointForRegion,
   regionFromEndpoint,
 } from './constants.js';
-export { AcaSandboxError, isNotFoundError } from './errors.js';
+export { AcaSandboxError, CommandFailedError, isNotFoundError } from './errors.js';
 export { SandboxGroupManagementClient } from './managementClient.js';
+export { PagedIterable } from './pagination.js';
 export { OperationPoller } from './poller.js';
 export { SandboxClient } from './sandboxClient.js';
 export { SandboxGroupClient } from './sandboxGroupClient.js';

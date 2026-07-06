@@ -1,5 +1,10 @@
-import { DATA_PLANE_BASE, DATA_PLANE_SCOPE, DEFAULT_API_VERSION } from './constants.js';
-import { isNotFoundError } from './errors.js';
+import {
+  DATA_PLANE_BASE,
+  DATA_PLANE_SCOPE,
+  DEFAULT_API_VERSION,
+  endpointForRegion,
+} from './constants.js';
+import { CommandFailedError, isNotFoundError } from './errors.js';
 import { RestClient } from './http.js';
 import { OperationPoller, statePoller } from './poller.js';
 import type {
@@ -20,7 +25,6 @@ import type {
   SandboxClientOptions,
   SandboxPort,
   SandboxStats,
-  TokenCredential,
   Snapshot,
   WriteFileOptions,
 } from './types.js';
@@ -28,6 +32,11 @@ import { boolParam, pathSegment, toUint8Array, validatePathSegment } from './uti
 
 const RESUMABLE_STATES = new Set(['stopped', 'suspended', 'idle']);
 const TERMINAL_STATES = new Set(['deleting', 'failed']);
+
+type InternalSandboxClientOptions = Pick<
+  SandboxClientOptions,
+  'subscriptionId' | 'resourceGroup' | 'sandboxGroup' | 'sandboxId'
+>;
 
 export class SandboxClient {
   readonly subscriptionId: string;
@@ -37,29 +46,32 @@ export class SandboxClient {
 
   private readonly rest: RestClient;
 
-  constructor(endpoint: string, credential: TokenCredential, options: SandboxClientOptions);
-  constructor(rest: RestClient, options: SandboxClientOptions);
+  constructor(options: SandboxClientOptions);
+  constructor(rest: RestClient, options: InternalSandboxClientOptions);
   constructor(
-    endpointOrRest: string | RestClient,
-    credentialOrOptions: TokenCredential | SandboxClientOptions,
-    maybeOptions?: SandboxClientOptions,
+    optionsOrRest: SandboxClientOptions | RestClient,
+    maybeOptions?: InternalSandboxClientOptions,
   ) {
-    const options = maybeOptions ?? (credentialOrOptions as SandboxClientOptions);
+    const options = maybeOptions ?? (optionsOrRest as SandboxClientOptions);
     this.subscriptionId = options.subscriptionId;
     this.resourceGroup = validatePathSegment(options.resourceGroup, 'resourceGroup');
     this.sandboxGroup = validatePathSegment(options.sandboxGroup, 'sandboxGroup');
     this.sandboxId = validatePathSegment(options.sandboxId, 'sandboxId');
 
     this.rest =
-      endpointOrRest instanceof RestClient
-        ? endpointOrRest
+      optionsOrRest instanceof RestClient
+        ? optionsOrRest
         : new RestClient({
-            endpoint: endpointOrRest || DATA_PLANE_BASE,
-            credential: credentialOrOptions as TokenCredential,
-            scope: options.audience ?? DATA_PLANE_SCOPE,
-            apiVersion: options.apiVersion ?? DEFAULT_API_VERSION,
-            fetch: options.fetch,
+            endpoint: resolveDataPlaneEndpoint(optionsOrRest),
+            credential: optionsOrRest.credential,
+            scope: optionsOrRest.audience ?? DATA_PLANE_SCOPE,
+            apiVersion: optionsOrRest.apiVersion ?? DEFAULT_API_VERSION,
+            fetch: optionsOrRest.fetch,
           });
+  }
+
+  get id(): string {
+    return this.sandboxId;
   }
 
   get groupPath(): string {
@@ -74,19 +86,12 @@ export class SandboxClient {
     return this.rest.request<Sandbox>('GET', this.sandboxPath);
   }
 
-  async delete(): Promise<void> {
-    await this.rest.request('DELETE', this.sandboxPath, {
-      responseType: 'void',
-      allowedStatusCodes: [202],
-    });
-  }
-
-  beginDelete(): OperationPoller<void> {
+  delete(): OperationPoller<void> {
     let started = false;
     return new OperationPoller(async () => {
       if (!started) {
         started = true;
-        await this.delete();
+        await this.deleteResource();
       }
 
       try {
@@ -98,20 +103,16 @@ export class SandboxClient {
         }
         throw error;
       }
-    });
+    }).start();
   }
 
-  async stop(): Promise<void> {
-    await this.rest.request('POST', `${this.sandboxPath}/stop`, { responseType: 'void' });
-  }
-
-  beginStop(): OperationPoller<Sandbox> {
+  stop(): OperationPoller<Sandbox> {
     let started = false;
     return statePoller({
       getResource: async () => {
         if (!started) {
           started = true;
-          await this.stop();
+          await this.stopResource();
         }
         return this.get();
       },
@@ -119,20 +120,16 @@ export class SandboxClient {
       targetStates: ['Stopped', 'Suspended', 'Idle'],
       failedStates: ['Failed'],
       transform: (sandbox) => sandbox,
-    });
+    }).start();
   }
 
-  async resume(): Promise<void> {
-    await this.rest.request('POST', `${this.sandboxPath}/resume`, { responseType: 'void' });
-  }
-
-  beginResume(): OperationPoller<Sandbox> {
+  resume(): OperationPoller<Sandbox> {
     let started = false;
     return statePoller({
       getResource: async () => {
         if (!started) {
           started = true;
-          await this.resume();
+          await this.resumeResource();
         }
         return this.get();
       },
@@ -140,7 +137,7 @@ export class SandboxClient {
       targetStates: ['Running'],
       failedStates: ['Failed', 'Deleting'],
       transform: (sandbox) => sandbox,
-    });
+    }).start();
   }
 
   async waitForRunning(
@@ -172,8 +169,7 @@ export class SandboxClient {
     }
 
     if (state && RESUMABLE_STATES.has(state)) {
-      await this.resume();
-      await this.waitForRunning(options);
+      await this.resume().pollUntilDone(options);
       return;
     }
     throw new Error(
@@ -187,9 +183,24 @@ export class SandboxClient {
     if (options.workingDirectory) {
       body.workingDirectory = options.workingDirectory;
     }
-    return this.rest.request<ExecResult>('POST', `${this.sandboxPath}/executeShellCommand`, {
-      body,
-    });
+    const response = await this.rest.request<Partial<ExecResult>>(
+      'POST',
+      `${this.sandboxPath}/executeShellCommand`,
+      {
+        body,
+      },
+    );
+    const result: ExecResult = {
+      ...response,
+      stdout: response.stdout ?? '',
+      stderr: response.stderr ?? '',
+      exitCode: response.exitCode ?? 0,
+    };
+
+    if (options.check && result.exitCode !== 0) {
+      throw new CommandFailedError(command, result.exitCode, result.stdout, result.stderr);
+    }
+    return result;
   }
 
   async listFiles(path = '/', options: FileOperationOptions = {}): Promise<DirListing> {
@@ -296,18 +307,12 @@ export class SandboxClient {
     return Array.isArray(response) ? response : (response.ports ?? []);
   }
 
-  async createSnapshot(options: { name?: string } = {}): Promise<Snapshot> {
-    return this.rest.request<Snapshot>('POST', `${this.sandboxPath}/snapshot`, {
-      body: options.name ? { labels: { name: options.name } } : {},
-    });
-  }
-
-  beginCreateSnapshot(options: { name?: string } = {}): OperationPoller<Snapshot> {
+  createSnapshot(options: { name?: string } = {}): OperationPoller<Snapshot> {
     let snapshot: Snapshot | undefined;
     return new OperationPoller(async () => {
-      snapshot ??= await this.createSnapshot(options);
+      snapshot ??= await this.createSnapshotResource(options);
       return { done: true, status: snapshot.state, result: snapshot };
-    });
+    }).start();
   }
 
   async getStats(): Promise<SandboxStats> {
@@ -320,31 +325,11 @@ export class SandboxClient {
     });
   }
 
-  async commit(options: { name?: string } = {}): Promise<DiskImage> {
-    const response = await this.rest.request<
-      DiskImage | { diskImage?: DiskImage; diskImageId?: string }
-    >('POST', `${this.sandboxPath}/commit`, {
-      body: options.name ? { labels: { name: options.name } } : {},
-    });
-
-    const wrappedImage = (response as { diskImage?: DiskImage }).diskImage;
-
-    if (wrappedImage) {
-      return wrappedImage;
-    }
-    const diskImageId = (response as { diskImageId?: string }).diskImageId;
-
-    if (typeof diskImageId === 'string') {
-      return { ...response, id: diskImageId, name: options.name } as DiskImage;
-    }
-    return response as DiskImage;
-  }
-
-  beginCommit(options: { name?: string } = {}): OperationPoller<DiskImage> {
+  commit(options: { name?: string } = {}): OperationPoller<DiskImage> {
     let image: DiskImage | undefined;
     return statePoller({
       getResource: async () => {
-        image ??= await this.commit(options);
+        image ??= await this.commitResource(options);
 
         try {
           return await this.getCommittedDiskImage(image.id);
@@ -359,7 +344,7 @@ export class SandboxClient {
       targetStates: ['Ready', 'Succeeded'],
       failedStates: ['Failed'],
       transform: (resource) => resource,
-    });
+    }).start();
   }
 
   private async getCommittedDiskImage(imageId: string): Promise<DiskImage> {
@@ -426,6 +411,54 @@ export class SandboxClient {
   async getEgressDecisions(): Promise<EgressDecisions> {
     return this.rest.request<EgressDecisions>('GET', `${this.sandboxPath}/egress-decisions`);
   }
+
+  private async deleteResource(): Promise<void> {
+    await this.rest.request('DELETE', this.sandboxPath, {
+      responseType: 'void',
+      allowedStatusCodes: [202],
+    });
+  }
+
+  private async stopResource(): Promise<void> {
+    await this.rest.request('POST', `${this.sandboxPath}/stop`, { responseType: 'void' });
+  }
+
+  private async resumeResource(): Promise<void> {
+    await this.rest.request('POST', `${this.sandboxPath}/resume`, { responseType: 'void' });
+  }
+
+  private async createSnapshotResource(options: { name?: string } = {}): Promise<Snapshot> {
+    return this.rest.request<Snapshot>('POST', `${this.sandboxPath}/snapshot`, {
+      body: options.name ? { labels: { name: options.name } } : {},
+    });
+  }
+
+  private async commitResource(options: { name?: string } = {}): Promise<DiskImage> {
+    const response = await this.rest.request<
+      DiskImage | { diskImage?: DiskImage; diskImageId?: string }
+    >('POST', `${this.sandboxPath}/commit`, {
+      body: options.name ? { labels: { name: options.name } } : {},
+    });
+
+    const wrappedImage = (response as { diskImage?: DiskImage }).diskImage;
+
+    if (wrappedImage) {
+      return wrappedImage;
+    }
+    const diskImageId = (response as { diskImageId?: string }).diskImageId;
+
+    if (typeof diskImageId === 'string') {
+      return { ...response, id: diskImageId, name: options.name } as DiskImage;
+    }
+    return response as DiskImage;
+  }
+}
+
+function resolveDataPlaneEndpoint(options: SandboxClientOptions): string {
+  if (options.endpoint && options.region) {
+    throw new Error('Use either endpoint or region, not both.');
+  }
+  return options.endpoint ?? (options.region ? endpointForRegion(options.region) : DATA_PLANE_BASE);
 }
 
 function toLifecyclePolicyWire(policy: LifecyclePolicy): Record<string, unknown> {

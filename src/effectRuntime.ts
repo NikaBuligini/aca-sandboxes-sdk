@@ -1,27 +1,15 @@
-import { Effect, Either } from 'effect';
+import { Cause, Effect, Exit } from 'effect';
 
-import { sleep } from './util.js';
+export async function runPromise<T, E>(
+  effect: Effect.Effect<T, E>,
+  options: { readonly signal?: AbortSignal } = {},
+): Promise<T> {
+  const result = await Effect.runPromiseExit(effect, options);
 
-export async function runPromise<T>(effect: Effect.Effect<T, unknown>): Promise<T> {
-  const result = await Effect.runPromise(Effect.either(effect));
-
-  if (Either.isLeft(result)) {
-    throw result.left;
-  }
-
-  return result.right;
-}
-
-export function tryPromiseUnknown<T>(evaluate: () => Promise<T>): Effect.Effect<T, unknown> {
-  return Effect.tryPromise({
-    try: evaluate,
-    catch: (error) => error,
+  return Exit.match(result, {
+    onFailure: (cause) => {
+      throw Cause.squash(cause);
+    },
+    onSuccess: (value) => value,
   });
-}
-
-export function sleepEffect(
-  delayInMs: number,
-  abortSignal?: AbortSignal,
-): Effect.Effect<void, unknown> {
-  return tryPromiseUnknown(() => sleep(delayInMs, abortSignal));
 }
