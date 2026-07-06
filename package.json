@@ -30,14 +30,17 @@
   },
   "scripts": {
     "build": "tsdown",
+    "changeset": "changeset",
     "clean": "rm -rf build",
     "fmt": "oxfmt src examples tsconfig.json tsdown.config.ts vitest.config.ts package.json .oxfmtrc.json upstream --write",
     "fmt:check": "oxfmt src examples tsconfig.json tsdown.config.ts vitest.config.ts package.json .oxfmtrc.json upstream --check",
     "lint": "oxlint src examples tsdown.config.ts vitest.config.ts",
     "lint:fix": "oxlint src examples tsdown.config.ts vitest.config.ts --fix",
     "test": "vitest run",
+    "release": "pnpm build && changeset publish",
     "test:watch": "vitest",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "version-packages": "changeset version"
   },
   "dependencies": {
     "@effect/platform": "^0.96.2",
@@ -45,6 +48,7 @@
   },
   "devDependencies": {
     "@azure/identity": "^4.13.1",
+    "@changesets/cli": "^2.31.0",
     "@effect/language-service": "^0.86.4",
     "@effect/vitest": "^0.29.0",
     "oxfmt": "^0.57.0",
