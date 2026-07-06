@@ -4,6 +4,7 @@ export default defineConfig({
   entry: {
     index: 'src/index.ts',
     effect: 'src/effect.ts',
+    'ai-sdk': 'src/aiSdk/index.ts',
   },
   outDir: 'build',
   format: ['esm'],
@@ -12,6 +13,6 @@ export default defineConfig({
   clean: true,
   platform: 'neutral',
   deps: {
-    neverBundle: [/^@azure\//, /^@effect\/platform(?:\/.*)?$/, /^effect(?:\/.*)?$/],
+    neverBundle: [/^@ai-sdk\//, /^@azure\//, /^@effect\/platform(?:\/.*)?$/, /^effect(?:\/.*)?$/],
   },
 });

@@ -127,6 +127,7 @@ export type ListSandboxesOptions = {
 export type ExecOptions = {
   workingDirectory?: string;
   check?: boolean;
+  abortSignal?: AbortSignal;
 };
 
 export type ExecResult = {
@@ -207,6 +208,7 @@ export type DirListing = {
 
 export type FileOperationOptions = {
   containerName?: string;
+  abortSignal?: AbortSignal;
 };
 
 export type WriteFileOptions = FileOperationOptions & {

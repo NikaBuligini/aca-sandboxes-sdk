@@ -12,6 +12,12 @@ Initial API compatibility was based on Python package `azure-containerapps-sandb
 pnpm add aca-sandboxes-sdk @azure/identity
 ```
 
+For the AI SDK sandbox provider, also install the optional AI SDK peer dependencies:
+
+```bash
+pnpm add aca-sandboxes-sdk @azure/identity @ai-sdk/harness @ai-sdk/provider-utils
+```
+
 ## Quick Start
 
 ```ts
@@ -104,6 +110,71 @@ const sandbox = await poller.pollUntilDone({ intervalInMs: 5_000, timeoutInMs: 6
 
 The operation request starts as soon as the method is called.
 
+## AI SDK Sandbox Provider
+
+The `aca-sandboxes-sdk/ai-sdk` entrypoint exposes an AI SDK Harness sandbox provider backed by ACA sandboxes.
+
+```ts
+import { DefaultAzureCredential } from "@azure/identity";
+import { SandboxGroupClient } from "aca-sandboxes-sdk";
+import { createAcaSandbox } from "aca-sandboxes-sdk/ai-sdk";
+
+const client = SandboxGroupClient.fromEnv({
+  credential: new DefaultAzureCredential(),
+  region: "eastus2",
+});
+
+const provider = createAcaSandbox({
+  client,
+  disk: "ubuntu",
+  labels: { app: "ai-sdk" },
+});
+
+const networkSession = await provider.createSession({
+  sessionId: "example-session",
+});
+const session = networkSession.restricted();
+
+await session.writeTextFile({
+  path: "hello.txt",
+  content: "Hello from ACA through the AI SDK sandbox API.\n",
+});
+
+const result = await session.run({ command: "cat hello.txt" });
+console.log(result.stdout);
+
+await networkSession.destroy?.();
+```
+
+`createSession()` creates an ACA sandbox and, when a `sessionId` is provided, labels it so `resumeSession()` can find the same sandbox later and ensure it is running.
+
+Sessions created from a `SandboxGroupClient` own their lifecycle: `stop()` stops the sandbox and `destroy()` deletes it. Providers created with an existing `SandboxClient` wrap that sandbox and do not stop or delete it.
+
+Ports can be exposed at create time or replaced later. Numeric ports default to anonymous auth (`{ auth: { anonymous: true } }`) so AI SDK bridge WebSockets can connect.
+
+```ts
+const provider = createAcaSandbox({
+  client,
+  disk: "ubuntu",
+  ports: [3000],
+});
+
+const session = await provider.createSession();
+const url = await session.getPortUrl({ port: 3000, protocol: "https" });
+console.log(url);
+```
+
+Network policy mapping supports `allow-all`, `deny-all`, and custom host allow-lists. CIDR allow/deny rules are not currently mapped to ACA egress policies.
+
+```ts
+await session.setNetworkPolicy?.({
+  mode: "custom",
+  allowedHosts: ["api.example.com", "*.example.org"],
+});
+```
+
+See `examples/aiSdkSandbox.ts` for a runnable example.
+
 ## Effect Integration
 
 The main SDK API is Promise-based. A richer Effect API is available from `aca-sandboxes-sdk/effect`.
@@ -171,9 +242,13 @@ Implemented:
 - volumes
 - secrets
 - basic egress policy helpers
+- AI SDK Harness provider via `aca-sandboxes-sdk/ai-sdk`
+- AI SDK sandbox sessions with `run`, emulated `spawn`, file reads/writes, ports, lifecycle, and network policy helpers
 
 Not implemented yet:
 
 - interactive PTY shell, matching the Python SDK limitation
+- native streaming/detached process support; AI SDK `spawn()` is emulated through background shell execution and polling
+- AI SDK custom network policies with CIDR allow/deny rules
 - exhaustive client-side validation for every preview model
 - generated OpenAPI-level model coverage

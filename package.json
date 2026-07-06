@@ -1,6 +1,6 @@
 {
   "name": "aca-sandboxes-sdk",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Unofficial TypeScript SDK for Azure Container Apps sandboxes.",
   "keywords": [
     "aca",
@@ -26,6 +26,10 @@
     "./effect": {
       "types": "./build/effect.d.ts",
       "import": "./build/effect.js"
+    },
+    "./ai-sdk": {
+      "types": "./build/ai-sdk.d.ts",
+      "import": "./build/ai-sdk.js"
     }
   },
   "scripts": {
@@ -47,6 +51,8 @@
     "effect": "^3.21.4"
   },
   "devDependencies": {
+    "@ai-sdk/harness": "^1.0.19",
+    "@ai-sdk/provider-utils": "^5.0.5",
     "@azure/identity": "^4.13.1",
     "@changesets/cli": "^2.31.0",
     "@effect/language-service": "^0.86.4",
@@ -56,6 +62,18 @@
     "tsdown": "^0.22.3",
     "typescript": "^6.0.3",
     "vitest": "^4.1.10"
+  },
+  "peerDependencies": {
+    "@ai-sdk/harness": "^1.0.19",
+    "@ai-sdk/provider-utils": "^5.0.5"
+  },
+  "peerDependenciesMeta": {
+    "@ai-sdk/harness": {
+      "optional": true
+    },
+    "@ai-sdk/provider-utils": {
+      "optional": true
+    }
   },
   "packageManager": "pnpm@10.34.3"
 }

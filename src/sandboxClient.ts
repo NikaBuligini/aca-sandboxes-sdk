@@ -188,6 +188,7 @@ export class SandboxClient {
       `${this.sandboxPath}/executeShellCommand`,
       {
         body,
+        abortSignal: options.abortSignal,
       },
     );
     const result: ExecResult = {
@@ -206,12 +207,14 @@ export class SandboxClient {
   async listFiles(path = '/', options: FileOperationOptions = {}): Promise<DirListing> {
     return this.rest.request<DirListing>('GET', `${this.sandboxPath}/files/list`, {
       params: { path, containerName: options.containerName },
+      abortSignal: options.abortSignal,
     });
   }
 
   async statFile(path: string, options: FileOperationOptions = {}): Promise<FileInfo> {
     return this.rest.request<FileInfo>('GET', `${this.sandboxPath}/files/stat`, {
       params: { path, containerName: options.containerName },
+      abortSignal: options.abortSignal,
     });
   }
 
@@ -219,6 +222,7 @@ export class SandboxClient {
     return this.rest.request<Uint8Array>('GET', `${this.sandboxPath}/files`, {
       params: { path, containerName: options.containerName },
       responseType: 'binary',
+      abortSignal: options.abortSignal,
     });
   }
 
@@ -241,6 +245,7 @@ export class SandboxClient {
       headers: { 'Content-Type': 'application/octet-stream' },
       body: toUint8Array(content),
       responseType: 'void',
+      abortSignal: options.abortSignal,
     });
   }
 
@@ -252,6 +257,7 @@ export class SandboxClient {
         containerName: options.containerName,
       },
       responseType: 'void',
+      abortSignal: options.abortSignal,
     });
   }
 
@@ -260,6 +266,7 @@ export class SandboxClient {
       params: { containerName: options.containerName },
       body: { path },
       responseType: 'void',
+      abortSignal: options.abortSignal,
     });
   }
 
