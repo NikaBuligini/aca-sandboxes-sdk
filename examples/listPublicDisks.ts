@@ -4,13 +4,19 @@ import { SandboxGroupClient, endpointForRegion } from '../src/index.js';
 
 // Usage:
 // az login
-// AZURE_SUBSCRIPTION_ID=... AZURE_RESOURCE_GROUP=... AZURE_SANDBOX_GROUP=... pnpm dlx tsx examples/listPublicDisks.ts
-declare const process: { env: Record<string, string | undefined> };
+// Create examples/.env with AZURE_SUBSCRIPTION_ID, AZURE_RESOURCE_GROUP, and AZURE_SANDBOX_GROUP.
+// pnpm dlx tsx examples/listPublicDisks.ts
+declare const process: {
+  env: Record<string, string | undefined>;
+  loadEnvFile?: (path?: string | URL) => void;
+};
+
+loadExamplesEnv();
 
 const subscriptionId = requiredEnv('AZURE_SUBSCRIPTION_ID');
 const resourceGroup = requiredEnv('AZURE_RESOURCE_GROUP');
 const sandboxGroup = requiredEnv('AZURE_SANDBOX_GROUP');
-const region = process.env.AZURE_REGION ?? 'eastus2';
+const region = process.env.AZURE_REGION ?? 'swedencentral';
 
 const credential = new DefaultAzureCredential();
 
@@ -34,4 +40,18 @@ function requiredEnv(name: string): string {
   }
 
   return value;
+}
+
+function loadExamplesEnv(): void {
+  try {
+    process.loadEnvFile?.(new URL('.env', import.meta.url));
+  } catch (error) {
+    if (!isMissingFileError(error)) {
+      throw error;
+    }
+  }
+}
+
+function isMissingFileError(error: unknown): error is { code: 'ENOENT' } {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT';
 }
