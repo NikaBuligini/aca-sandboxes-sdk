@@ -1,6 +1,6 @@
 {
   "name": "aca-sandboxes-sdk",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Unofficial TypeScript SDK for Azure Container Apps sandboxes.",
   "keywords": [
     "aca",
