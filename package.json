@@ -1,0 +1,57 @@
+{
+  "name": "aca-sandboxes-sdk",
+  "version": "0.1.0",
+  "description": "Unofficial TypeScript SDK for Azure Container Apps sandboxes.",
+  "keywords": [
+    "aca",
+    "azure",
+    "container-apps",
+    "sandboxes",
+    "sdk"
+  ],
+  "license": "MIT",
+  "author": "Nikoloz Buligini",
+  "files": [
+    "build",
+    "README.md"
+  ],
+  "type": "module",
+  "main": "./build/index.js",
+  "types": "./build/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./build/index.d.ts",
+      "import": "./build/index.js"
+    },
+    "./effect": {
+      "types": "./build/effect.d.ts",
+      "import": "./build/effect.js"
+    }
+  },
+  "scripts": {
+    "build": "tsdown",
+    "clean": "rm -rf build",
+    "fmt": "oxfmt src examples tsconfig.json tsdown.config.ts vitest.config.ts package.json .oxfmtrc.json upstream --write",
+    "fmt:check": "oxfmt src examples tsconfig.json tsdown.config.ts vitest.config.ts package.json .oxfmtrc.json upstream --check",
+    "lint": "oxlint src examples tsdown.config.ts vitest.config.ts",
+    "lint:fix": "oxlint src examples tsdown.config.ts vitest.config.ts --fix",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@effect/platform": "^0.96.2",
+    "effect": "^3.21.4"
+  },
+  "devDependencies": {
+    "@azure/identity": "^4.13.1",
+    "@effect/language-service": "^0.86.4",
+    "@effect/vitest": "^0.29.0",
+    "oxfmt": "^0.57.0",
+    "oxlint": "^1.72.0",
+    "tsdown": "^0.22.3",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10"
+  },
+  "packageManager": "pnpm@10.34.3"
+}
