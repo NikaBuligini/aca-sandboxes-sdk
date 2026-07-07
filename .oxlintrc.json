@@ -5,8 +5,7 @@
     "unicorn",
     "oxc",
     "import",
-    "promise",
-    "vitest"
+    "promise"
   ],
   "categories": {
     "correctness": "error"

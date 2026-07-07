@@ -1,5 +1,11 @@
 # aca-sandboxes-sdk
 
+## 0.3.1
+
+### Patch Changes
+
+- Add AI SDK Harness Agent documentation and sandbox provider package keywords.
+
 ## 0.2.0
 
 ### Minor Changes

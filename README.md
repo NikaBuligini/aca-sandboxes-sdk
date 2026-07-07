@@ -18,21 +18,27 @@ For the AI SDK sandbox provider, also install the optional AI SDK peer dependenc
 pnpm add aca-sandboxes-sdk @azure/identity @ai-sdk/harness @ai-sdk/provider-utils
 ```
 
+For the Harness Agent example below, install a harness adapter such as Claude Code:
+
+```bash
+pnpm add @ai-sdk/harness-claude-code
+```
+
 ## Quick Start
 
 ```ts
-import { DefaultAzureCredential } from "@azure/identity";
-import { SandboxGroupClient } from "aca-sandboxes-sdk";
+import { DefaultAzureCredential } from '@azure/identity';
+import { SandboxGroupClient } from 'aca-sandboxes-sdk';
 
 const client = new SandboxGroupClient({
   credential: new DefaultAzureCredential(),
-  region: "eastus2",
+  region: 'eastus2',
   subscriptionId: process.env.AZURE_SUBSCRIPTION_ID!,
   resourceGroup: process.env.AZURE_RESOURCE_GROUP!,
   sandboxGroup: process.env.AZURE_SANDBOX_GROUP!,
 });
 
-const sandbox = await client.createSandbox({ disk: "ubuntu" });
+const sandbox = await client.createSandbox({ disk: 'ubuntu' });
 
 const result = await sandbox.exec("echo 'Hello from ACA Sandbox.'", { check: true });
 console.log(result.stdout);
@@ -45,7 +51,7 @@ await sandbox.delete();
 ```ts
 const client = SandboxGroupClient.fromEnv({
   credential: new DefaultAzureCredential(),
-  region: "eastus2",
+  region: 'eastus2',
 });
 ```
 
@@ -54,14 +60,14 @@ const client = SandboxGroupClient.fromEnv({
 ## Create a Sandbox Group
 
 ```ts
-import { DefaultAzureCredential } from "@azure/identity";
-import { SandboxGroupManagementClient } from "aca-sandboxes-sdk";
+import { DefaultAzureCredential } from '@azure/identity';
+import { SandboxGroupManagementClient } from 'aca-sandboxes-sdk';
 
 const management = SandboxGroupManagementClient.fromEnv({
   credential: new DefaultAzureCredential(),
 });
 
-await management.createGroup(process.env.AZURE_SANDBOX_GROUP!, "eastus2");
+await management.createGroup(process.env.AZURE_SANDBOX_GROUP!, 'eastus2');
 ```
 
 You still need a resource group and the proper `Container Apps SandboxGroup Data Owner` role assignment for data-plane calls.
@@ -69,11 +75,11 @@ You still need a resource group and the proper `Container Apps SandboxGroup Data
 ## Files
 
 ```ts
-await sandbox.writeFile("/tmp/hello.txt", "Hello from TypeScript");
-const content = await sandbox.readTextFile("/tmp/hello.txt");
+await sandbox.writeFile('/tmp/hello.txt', 'Hello from TypeScript');
+const content = await sandbox.readTextFile('/tmp/hello.txt');
 console.log(content);
 
-const listing = await sandbox.listFiles("/tmp");
+const listing = await sandbox.listFiles('/tmp');
 console.log(listing.entries);
 ```
 
@@ -88,7 +94,7 @@ await sandbox.waitForRunning();
 ## Listing
 
 ```ts
-for await (const sandbox of client.listSandboxes({ labels: { tier: "dev" } })) {
+for await (const sandbox of client.listSandboxes({ labels: { tier: 'dev' } })) {
   console.log(sandbox.id, sandbox.state);
 }
 
@@ -100,7 +106,7 @@ const publicImages = await client.listPublicDiskImages().toArray();
 Long-running operations return awaitable `OperationPoller` objects. Await them directly for the common case, or keep the poller to inspect progress and customize polling.
 
 ```ts
-const poller = client.createSandbox({ disk: "ubuntu" });
+const poller = client.createSandbox({ disk: 'ubuntu' });
 
 console.log(poller.status);
 await poller.poll();
@@ -115,36 +121,87 @@ The operation request starts as soon as the method is called.
 The `aca-sandboxes-sdk/ai-sdk` entrypoint exposes an AI SDK Harness sandbox provider backed by ACA sandboxes.
 
 ```ts
-import { DefaultAzureCredential } from "@azure/identity";
-import { SandboxGroupClient } from "aca-sandboxes-sdk";
-import { createAcaSandbox } from "aca-sandboxes-sdk/ai-sdk";
+import { DefaultAzureCredential } from '@azure/identity';
+import { SandboxGroupClient } from 'aca-sandboxes-sdk';
+import { createAcaSandbox } from 'aca-sandboxes-sdk/ai-sdk';
 
 const client = SandboxGroupClient.fromEnv({
   credential: new DefaultAzureCredential(),
-  region: "eastus2",
+  region: 'eastus2',
 });
 
 const provider = createAcaSandbox({
   client,
-  disk: "ubuntu",
-  labels: { app: "ai-sdk" },
+  disk: 'ubuntu',
+  labels: { app: 'ai-sdk' },
 });
 
 const networkSession = await provider.createSession({
-  sessionId: "example-session",
+  sessionId: 'example-session',
 });
 const session = networkSession.restricted();
 
 await session.writeTextFile({
-  path: "hello.txt",
-  content: "Hello from ACA through the AI SDK sandbox API.\n",
+  path: 'hello.txt',
+  content: 'Hello from ACA through the AI SDK sandbox API.\n',
 });
 
-const result = await session.run({ command: "cat hello.txt" });
+const result = await session.run({ command: 'cat hello.txt' });
 console.log(result.stdout);
 
 await networkSession.destroy?.();
 ```
+
+### Harness Agent
+
+The same provider can back an AI SDK `HarnessAgent`. Bridge-backed harness adapters need at least one exposed sandbox port.
+
+```ts
+import { DefaultAzureCredential } from '@azure/identity';
+import { HarnessAgent } from '@ai-sdk/harness/agent';
+import { createClaudeCode } from '@ai-sdk/harness-claude-code';
+import { SandboxGroupClient } from 'aca-sandboxes-sdk';
+import { createAcaSandbox } from 'aca-sandboxes-sdk/ai-sdk';
+
+const client = SandboxGroupClient.fromEnv({
+  credential: new DefaultAzureCredential(),
+  region: 'eastus2',
+});
+
+const sandbox = createAcaSandbox({
+  client,
+  disk: 'ubuntu',
+  ports: [4000],
+  labels: { app: 'ai-sdk-harness' },
+});
+
+await sandbox.exec('npm install -g pnpm@$latest-11');
+
+const agent = new HarnessAgent({
+  id: 'aca-code-agent',
+  harness: createClaudeCode(),
+  sandbox,
+  instructions: 'Write code in the sandbox and run it before replying.',
+});
+
+const session = await agent.createSession({
+  sessionId: 'aca-harness-example',
+});
+
+try {
+  const result = await agent.generate({
+    session,
+    prompt:
+      'Create a small script in the current directory that prints fibonacci(10), run it, and tell me the output.',
+  });
+
+  console.log(result.text);
+} finally {
+  await session.destroy();
+}
+```
+
+Because this provider creates the sandbox from a `SandboxGroupClient`, `session.destroy()` deletes the ACA sandbox.
 
 `createSession()` creates an ACA sandbox and, when a `sessionId` is provided, labels it so `resumeSession()` can find the same sandbox later and ensure it is running.
 
@@ -155,12 +212,12 @@ Ports can be exposed at create time or replaced later. Numeric ports default to 
 ```ts
 const provider = createAcaSandbox({
   client,
-  disk: "ubuntu",
+  disk: 'ubuntu',
   ports: [3000],
 });
 
 const session = await provider.createSession();
-const url = await session.getPortUrl({ port: 3000, protocol: "https" });
+const url = await session.getPortUrl({ port: 3000, protocol: 'https' });
 console.log(url);
 ```
 
@@ -168,8 +225,8 @@ Network policy mapping supports `allow-all`, `deny-all`, and custom host allow-l
 
 ```ts
 await session.setNetworkPolicy?.({
-  mode: "custom",
-  allowedHosts: ["api.example.com", "*.example.org"],
+  mode: 'custom',
+  allowedHosts: ['api.example.com', '*.example.org'],
 });
 ```
 
@@ -180,11 +237,11 @@ See `examples/aiSdkSandbox.ts` for a runnable example.
 The main SDK API is Promise-based. A richer Effect API is available from `aca-sandboxes-sdk/effect`.
 
 ```ts
-import { Effect } from "effect";
-import { exec, withSandbox } from "aca-sandboxes-sdk/effect";
+import { Effect } from 'effect';
+import { exec, withSandbox } from 'aca-sandboxes-sdk/effect';
 
-const program = withSandbox(client, { disk: "ubuntu" }, (sandbox) =>
-  exec(sandbox, "echo hello", { check: true }),
+const program = withSandbox(client, { disk: 'ubuntu' }, (sandbox) =>
+  exec(sandbox, 'echo hello', { check: true }),
 );
 
 const result = await Effect.runPromise(program);
@@ -196,13 +253,9 @@ console.log(result.stdout);
 The Effect entrypoint also exposes scoped resources, streams, and services:
 
 ```ts
-import { DefaultAzureCredential } from "@azure/identity";
-import { Effect, Layer, Stream } from "effect";
-import {
-  AcaSandboxes,
-  AzureCredential,
-  exec,
-} from "aca-sandboxes-sdk/effect";
+import { DefaultAzureCredential } from '@azure/identity';
+import { Effect, Layer, Stream } from 'effect';
+import { AcaSandboxes, AzureCredential, exec } from 'aca-sandboxes-sdk/effect';
 
 const program = Effect.gen(function* () {
   const service = yield* AcaSandboxes;
@@ -210,8 +263,8 @@ const program = Effect.gen(function* () {
   const sandboxes = yield* service.listSandboxes().pipe(Stream.runCollect);
   console.log(Array.from(sandboxes).map((sandbox) => sandbox.id));
 
-  const sandbox = yield* service.acquireSandbox({ disk: "ubuntu" });
-  const result = yield* exec(sandbox, "echo scoped", { check: true });
+  const sandbox = yield* service.acquireSandbox({ disk: 'ubuntu' });
+  const result = yield* exec(sandbox, 'echo scoped', { check: true });
   console.log(result.stdout);
 }).pipe(Effect.scoped);
 
